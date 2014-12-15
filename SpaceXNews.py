@@ -9,6 +9,10 @@ import html2text
 import os
 import twitter
 from config import *
+import datetime
+import logging
+ 
+logging.basicConfig(filename='SpaceXNews.log',level=logging.DEBUG)
 
 class SetQueue(Queue):
     ''' Subclass the Queue to keep track of all items that have
@@ -21,13 +25,11 @@ class SetQueue(Queue):
 
     def put(self, item):
         if item not in self.all_items:
-            #print("Queue Size: %d, Adding %s" % (self.qsize(), item))
             Queue.put(self, item)
             self.all_items.add(item)
 
     def get(self):
         item =  Queue.get(self)
-        #print("Queue Size: %d, Removing %s" % (self.qsize(), item))
         return item
 
 class Thready(threading.Thread):
@@ -48,7 +50,7 @@ class Thready(threading.Thread):
                 html = u2.urlopen(url).read().decode('utf-8')
             except Exception as e:
                 # unhandled exceptions are bad with threads.
-                print("Error: %s" % e) 
+                logging.warning("Error querying %s: %s" % (url, e))
             else:
                 # retrieve Page Text and Position Title
                 page_data = html2text.html2text(html)
@@ -57,7 +59,7 @@ class Thready(threading.Thread):
 
                 # Check if it's a position, and a new position.
                 if title is not None and self.conn_obj.count_urls(url) == 0:
-                    print('New url found: %s' % url)
+                    logging.info('New URL found: %s' % url)
                     self.conn_obj.add_url(url, page_data) # add to database
                     self.twitter.queue_new_position(title, url) # queue tweet
 
@@ -136,9 +138,11 @@ def canonicalize(url):
     return 'http://' + url
 
 if __name__ == '__main__':
+    logging.info('SpaceXNews.py is starting at %s' % datetime.datetime.now())
     conn_obj = Connection()
     conn_obj.create_table()
     should_tweet = (conn_obj.count_urls() != 0)
+    logging.info('Should Tweet during this job?...%s' % should_tweet)
     conn_obj.conn.close()
     queue = SetQueue()
     queue.put('http://www.spacex.com')
@@ -149,14 +153,14 @@ if __name__ == '__main__':
         t.setDaemon(True)
         t.start()
     queue.join() # wait for threads to finish
-    print('Done searching.')
+    logging.info('Finished searching.')
     if should_tweet:
         twit = Twitter(tweet_queue, auth=True)
         while not twit.queue.empty():
             time.sleep(1)
             try:
                 msg = twit.queue.get()
-                print("Tweeting: %s" % msg)
+                logging.info("Tweeting: %s" % msg)
                 twit.tweet(msg)
             except Exception as e:
-                print 'Error sending tweet: %s' % e
+                loggin.error('Error sending tweet: %s' % e)
