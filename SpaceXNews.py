@@ -2,6 +2,7 @@ from bs4 import BeautifulSoup
 import urllib2 as u2
 import pprint
 from Queue import Queue
+import re
 import time
 import threading
 import sqlite3
@@ -12,7 +13,7 @@ from config import *
 import datetime
 import logging
  
-logging.basicConfig(filename='SpaceXNews.log',level=logging.DEBUG)
+logging.basicConfig(filename='log.txt',level=logging.DEBUG)
 
 class SetQueue(Queue):
     ''' Subclass the Queue to keep track of all items that have
@@ -54,21 +55,82 @@ class Thready(threading.Thread):
             else:
                 # retrieve Page Text and Position Title
                 page_data = html2text.html2text(html)
-                soup = BeautifulSoup(html)
-                title = get_title(soup)
+                url_soup = BeautifulSoup(html)
+                link = Link(url, url_soup)
+                
+                if link.report_type is not None:
+                    if self.conn_obj.count_urls(url) == 0:
+                        logging.info('New %s URL found: %s' % (link.report_type, url))
+                        self.conn_obj.add_url(url, page_data) # add to database
+                        self.twitter.queue_new(link.report_type, link.title, link.url) # queue tweet
+                    else:
+                        logging.info('Existing %s URL found: %s' % (link.report_type, url))
 
-                # Check if it's a position, and a new position.
-                if title is not None and self.conn_obj.count_urls(url) == 0:
-                    logging.info('New URL found: %s' % url)
-                    self.conn_obj.add_url(url, page_data) # add to database
-                    self.twitter.queue_new_position(title, url) # queue tweet
-
-                links = soup.find_all('a', href=True)
-                for link in links:
-                   formatted_link = canonicalize(link.attrs['href'])
-                   if is_whitelisted(formatted_link):
-                       self.queue.put(formatted_link)
+                for each_link in Link.linked_links(url_soup):
+                    formatted_link = Link.canonicalize(each_link.attrs['href'])
+                    if formatted_link is not None and Link.is_whitelisted(formatted_link):
+                        self.queue.put(formatted_link)
             self.queue.task_done()
+
+class Link():
+    def __init__(self, url, soup):
+        self.url = url
+        self.soup = soup
+        self.report_type = self.get_type()
+        self.title = self.get_title(soup)
+
+    @staticmethod
+    def linked_links(soup):
+        return soup.find_all('a', href=True)
+
+    @staticmethod
+    def canonicalize(url):
+        if url is None or len(url)==0:
+            return None
+        if url[0] == '/': # relative url
+            url = 'spacex.com' + url
+        # remove mixed types and appended forwardslashes
+        url = url.replace('http://','').replace('www.','').strip('/') 
+        return 'http://' + url
+
+    @staticmethod
+    def is_whitelisted(url):
+        if not Link.is_internal(url) or 'download' in url:
+            return False
+        return True
+
+    @staticmethod
+    def is_internal(url):
+        if '://spacex.com' not in url:
+            return False
+        return True
+
+    def get_type(self):
+        if '/careers/position/' in self.url:
+            return 'job'
+        elif re.search(r'/news/\d{4}/\d{2}/\d{2}', self.url) is not None:
+            return 'news'
+        elif re.search(r'/press/\d{4}/\d{2}/\d{2}', self.url) is not None:
+            return 'press'
+        elif re.search(r'/media-gallery/detail/\d{6}/\d{4}', self.url) is not None:
+            return 'image'
+        return None
+
+    def get_title(self, soup):
+        ''' Given a Beautiful Soup object, find the title '''
+        try:
+            if type == 'job':
+                title = soup.find('h2', 'position-title').text
+            elif type == 'news' or type == 'press':
+                title = soup.find('h1', 'title').text
+            elif type == 'image':
+                title = soup.find(id='asset-title').text
+        except:
+            title = None
+        else:
+            title = None
+        return title
+
 
 class Connection():
 
@@ -110,32 +172,27 @@ class Twitter(twitter.Twitter):
                                         twitter_consumer_key,
                                         twitter_consumer_secret))
 
-    def queue_new_position(self, title, url):
-        tweet = 'New position: %s. %s' % (title, url)
+    def queue_new(self, type, title, url):
+        if type == 'press':
+            str = 'press release'
+        elif type == 'news':
+            str = 'article'
+        elif type == 'job':
+            str = 'job'
+        elif type == 'image':
+            str = 'image'
+        else:
+            str = 'link'
+        if title is not None:
+            tweet = 'New %s: %s %s' % (str, title, url)
+        else:
+            tweet = 'New %s: %s' % (str, url)
         self.queue.put(tweet)
 
     def tweet(self, msg):
         self.statuses.update(status=msg)
 
-def is_whitelisted(url):
-    if 'careers' in url and 'category' not in url:
-        return True
-    return False
-
-def get_title(soup):
-    try:
-        title = soup.find('h2', 'position-title').text
-    except:
-        title = None
-    finally:
-        return title
-    
-def canonicalize(url):
-    if url[0] == '/': # relative url
-        url = 'spacex.com' + url
-    # remove mixed types and appended forwardslashes
-    url = url.replace('http://','').replace('www.','').strip('/') 
-    return 'http://' + url
+   
 
 if __name__ == '__main__':
     logging.info('SpaceXNews.py is starting at %s' % datetime.datetime.now())
@@ -163,4 +220,4 @@ if __name__ == '__main__':
                 logging.info("Tweeting: %s" % msg)
                 twit.tweet(msg)
             except Exception as e:
-                loggin.error('Error sending tweet: %s' % e)
+                logging.error('Error sending tweet: %s' % e)
