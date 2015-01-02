@@ -6,7 +6,6 @@ import re
 import time
 import threading
 import sqlite3
-import html2text
 import os
 import twitter
 from config import *
@@ -50,87 +49,44 @@ class Thready(threading.Thread):
             try:
                 html = u2.urlopen(url).read().decode('utf-8')
             except Exception as e:
-                # unhandled exceptions are bad with threads.
+                # unhandled exceptions are bad
                 logging.warning("Error querying %s: %s" % (url, e))
             else:
-                # retrieve Page Text and Position Title
-                page_data = html2text.html2text(html)
-                url_soup = BeautifulSoup(html)
-                link = Link(url, url_soup)
-                
-                if link.report_type is not None:
-                    if self.conn_obj.count_urls(url) == 0:
-                        logging.info('New %s URL found: %s' % (link.report_type, url))
-                        self.conn_obj.add_url(url, page_data) # add to database
-                        self.twitter.queue_new(link.report_type, link.title, link.url) # queue tweet
-                    else:
-                        logging.info('Existing %s URL found: %s' % (link.report_type, url))
-
-                for each_link in Link.linked_links(url_soup):
-                    formatted_link = Link.canonicalize(each_link.attrs['href'])
-                    if formatted_link is not None and Link.is_whitelisted(formatted_link):
-                        self.queue.put(formatted_link)
+                # Soup-ify the html
+                soup = BeautifulSoup(html)
+                if '/careers/list' in url:
+                    for datum in soup.find('div', class_='view-content').find_all('tr'):
+                        title = datum.find('a').text
+                        link = datum.find('a')['href']
+                        link = Link.canonicalize(link)
+                        if self.conn_obj.count_urls(link) == 0:
+                            logging.info('New Job found: %s, Link: %s' % (title, link))
+                            self.conn_obj.add_url(link) # add to database
+                            self.twitter.queue_new('job', title, link) # queue tweet
+                        else:
+                            logging.info('Existing Job found: %s, Link: %s' % (title, link))
+                elif '/news' in url:
+                    for datum in soup.find('div', class_='view-content').find_all('div', class_='views-row'):
+                        title = datum.find('h2').text
+                        link = datum.find('h2').find('a')['href']
+                        link = Link.canonicalize(link)
+                        if self.conn_obj.count_urls(link) == 0:
+                            logging.info('New Article found: %s, Link: %s' % (title, link))
+                            self.conn_obj.add_url(link) # add to database
+                            self.twitter.queue_new('news article', title, link) # queue tweet
+                        else:
+                            logging.info('Existing Article found: %s, Link: %s' % (title, link))
             self.queue.task_done()
 
+
 class Link():
-    def __init__(self, url, soup):
-        self.url = url
-        self.soup = soup
-        self.report_type = self.get_type()
-        self.title = self.get_title(soup)
-
-    @staticmethod
-    def linked_links(soup):
-        return soup.find_all('a', href=True)
-
     @staticmethod
     def canonicalize(url):
-        if url is None or len(url)==0:
-            return None
         if url[0] == '/': # relative url
             url = 'spacex.com' + url
-        # remove mixed types and appended forwardslashes
-        url = url.replace('http://','').replace('www.','').strip('/') 
-        return 'http://' + url
-
-    @staticmethod
-    def is_whitelisted(url):
-        if not Link.is_internal(url) or 'download' in url:
-            return False
-        return True
-
-    @staticmethod
-    def is_internal(url):
-        if '://spacex.com' not in url:
-            return False
-        return True
-
-    def get_type(self):
-        if '/careers/position/' in self.url:
-            return 'job'
-        elif re.search(r'/news/\d{4}/\d{2}/\d{2}', self.url) is not None:
-            return 'news'
-        elif re.search(r'/press/\d{4}/\d{2}/\d{2}', self.url) is not None:
-            return 'press'
-        elif re.search(r'/media-gallery/detail/\d{6}/\d{4}', self.url) is not None:
-            return 'image'
-        return None
-
-    def get_title(self, soup):
-        ''' Given a Beautiful Soup object, find the title '''
-        try:
-            if type == 'job':
-                title = soup.find('h2', 'position-title').text
-            elif type == 'news' or type == 'press':
-                title = soup.find('h1', 'title').text
-            elif type == 'image':
-                title = soup.find(id='asset-title').text
-        except:
-            title = None
-        else:
-            title = None
-        return title
-
+            # remove mixed types and appended forwardslashes
+        url = url.replace('http://','').replace('https://','').replace('www.','').strip('/') 
+        return url
 
 class Connection():
 
@@ -141,8 +97,7 @@ class Connection():
     def create_table(self):
         self.conn.cursor().execute('''CREATE TABLE IF NOT EXISTS spacex (
                                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                     link TEXT,
-                                     page TEXT)''')
+                                     link TEXT)''')
     
     def count_urls(self, url=None):
         ''' If no url is specified, return the total length of total '''
@@ -155,10 +110,10 @@ class Connection():
             cur.execute(sql)
         return cur.fetchone()[0]
 
-    def add_url(self, url, page):
-        sql = 'INSERT INTO spacex (link, page) values (?, ?)'
+    def add_url(self, url):
+        sql = 'INSERT INTO spacex (link) values (?)'
         cur = self.conn.cursor()
-        cur.execute(sql, (url, page))
+        cur.execute(sql, (url,))
         self.conn.commit()
 
 class Twitter(twitter.Twitter):
@@ -173,20 +128,7 @@ class Twitter(twitter.Twitter):
                                         twitter_consumer_secret))
 
     def queue_new(self, type, title, url):
-        if type == 'press':
-            str = 'press release'
-        elif type == 'news':
-            str = 'article'
-        elif type == 'job':
-            str = 'job'
-        elif type == 'image':
-            str = 'image'
-        else:
-            str = 'link'
-        if title is not None:
-            tweet = 'New %s: %s %s' % (str, title, url)
-        else:
-            tweet = 'New %s: %s' % (str, url)
+        tweet = 'New %s posted: %s, %s' % (type, title, url)
         self.queue.put(tweet)
 
     def tweet(self, msg):
@@ -202,7 +144,8 @@ if __name__ == '__main__':
     logging.info('Should Tweet during this job?...%s' % should_tweet)
     conn_obj.conn.close()
     queue = SetQueue()
-    queue.put('http://www.spacex.com')
+    queue.put('http://www.spacex.com/careers/list')
+    queue.put('http://www.spacex.com/news')
     tweet_queue = SetQueue()
     num_workers = 5 
     for i in range(num_workers):
@@ -210,7 +153,7 @@ if __name__ == '__main__':
         t.setDaemon(True)
         t.start()
     queue.join() # wait for threads to finish
-    logging.info('Finished searching.')
+    logging.info('SpaceXNews.py is finished searching at %s' % datetime.datetime.now())
     if should_tweet:
         twit = Twitter(tweet_queue, auth=True)
         while not twit.queue.empty():
