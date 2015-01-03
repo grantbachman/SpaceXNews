@@ -46,6 +46,7 @@ class Thready(threading.Thread):
         self.conn_obj = Connection()
         while True:
             url = self.queue.get()
+            thread_name = threading.current_thread().name
             try:
                 html = u2.urlopen(url).read().decode('utf-8')
             except Exception as e:
@@ -60,9 +61,9 @@ class Thready(threading.Thread):
                         link = datum.find('a')['href']
                         link = Link.canonicalize(link)
                         if self.conn_obj.count_urls(link) == 0:
-                            logging.info('New Job found: %s, Link: %s' % (title, link))
+                            logging.info('%s--New Job found: %s, Link: %s' % (thread_name, title, link))
                             self.conn_obj.add_url(link) # add to database
-                            self.twitter.queue_new('job', title, link) # queue tweet
+                            self.twitter.queue_new('Job', title, link) # queue tweet
                         else:
                             logging.info('Existing Job found: %s, Link: %s' % (title, link))
                 elif '/news' in url:
@@ -71,22 +72,40 @@ class Thready(threading.Thread):
                         link = datum.find('h2').find('a')['href']
                         link = Link.canonicalize(link)
                         if self.conn_obj.count_urls(link) == 0:
-                            logging.info('New Article found: %s, Link: %s' % (title, link))
+                            logging.info('%s--New Article found: %s, Link: %s' % (thread_name, title, link))
                             self.conn_obj.add_url(link) # add to database
-                            self.twitter.queue_new('news article', title, link) # queue tweet
+                            self.twitter.queue_new('News Article', title, link) # queue tweet
                         else:
                             logging.info('Existing Article found: %s, Link: %s' % (title, link))
-            self.queue.task_done()
+                elif '/media' in url:
+                    for datum in soup.find('div', class_='group-right').find_all('div', class_='views-row'):
+                        link = datum.find('a')['href']
+                        link = Link.canonicalize(link)
+                        if self.conn_obj.count_urls(link) == 0:
+                            try:
+                                media_html = u2.urlopen(link).read().decode('utf-8')
+                            except Exception as e:
+                                logging.info("Error querying for new media title at %s" % (link,))
+                            else:
+                                media_soup = BeautifulSoup(media_html)
+                                title = media_soup.find('h1').text
+                                media_type = media_soup.find('div', class_="breadcrumb").find('span', class_="last").text.split(' ')[0]
+                                logging.info('%s--New %s found: %s, Link: %s' % (thread_name, media_type, title, link))
+                                self.conn_obj.add_url(link) # add to database
+                                self.twitter.queue_new(media_type, title, link) # queue tweet
+                        else:
+                            logging.info('Existing Media found: %s' % (link,))
 
+            self.queue.task_done()
 
 class Link():
     @staticmethod
     def canonicalize(url):
         if url[0] == '/': # relative url
             url = 'spacex.com' + url
-            # remove mixed types and appended forwardslashes
+        # remove mixed types and appended forwardslashes
         url = url.replace('http://','').replace('https://','').replace('www.','').strip('/') 
-        return url
+        return 'http://' + url
 
 class Connection():
 
@@ -146,6 +165,7 @@ if __name__ == '__main__':
     queue = SetQueue()
     queue.put('http://www.spacex.com/careers/list')
     queue.put('http://www.spacex.com/news')
+    queue.put('http://www.spacex.com/media')
     tweet_queue = SetQueue()
     num_workers = 5 
     for i in range(num_workers):
