@@ -58,12 +58,14 @@ class Thready(threading.Thread):
                 if '/careers/list' in url:
                     for datum in soup.find('div', class_='view-content').find_all('tr'):
                         title = datum.find('a').text
+                        location = datum.find('div').text.strip().split(',')[0] 
                         link = datum.find('a')['href']
                         link = Link.canonicalize(link)
                         if self.conn_obj.count_urls(link) == 0:
-                            logging.info('%s--New Job found: %s, Link: %s' % (thread_name, title, link))
+                            logging.info('%s--New Job found: %s (%s), Link: %s' % (thread_name, title, location, link))
                             self.conn_obj.add_url(link) # add to database
-                            self.twitter.queue_new('Job', title, link) # queue tweet
+                            tweet = 'New Job (%s): %s %s' % (location, title, link)
+                            self.twitter.queue_new(tweet) # queue tweet
                         else:
                             logging.info('Existing Job found: %s, Link: %s' % (title, link))
                 elif '/news' in url:
@@ -74,7 +76,8 @@ class Thready(threading.Thread):
                         if self.conn_obj.count_urls(link) == 0:
                             logging.info('%s--New Article found: %s, Link: %s' % (thread_name, title, link))
                             self.conn_obj.add_url(link) # add to database
-                            self.twitter.queue_new('News Article', title, link) # queue tweet
+                            tweet = 'New Article: %s %s' % (title, link)
+                            self.twitter.queue_new(tweet) # queue tweet
                         else:
                             logging.info('Existing Article found: %s, Link: %s' % (title, link))
                 elif '/media' in url:
@@ -92,7 +95,8 @@ class Thready(threading.Thread):
                                 media_type = media_soup.find('div', class_="breadcrumb").find('span', class_="last").text.split(' ')[0]
                                 logging.info('%s--New %s found: %s, Link: %s' % (thread_name, media_type, title, link))
                                 self.conn_obj.add_url(link) # add to database
-                                self.twitter.queue_new(media_type, title, link) # queue tweet
+                                tweet = 'New %s: %s %s' % (media_type, title, link)
+                                self.twitter.queue_new(tweet) # queue tweet
                         else:
                             logging.info('Existing Media found: %s' % (link,))
 
@@ -146,8 +150,7 @@ class Twitter(twitter.Twitter):
                                         twitter_consumer_key,
                                         twitter_consumer_secret))
 
-    def queue_new(self, type, title, url):
-        tweet = 'New %s posted: %s, %s' % (type, title, url)
+    def queue_new(self, tweet):
         self.queue.put(tweet)
 
     def tweet(self, msg):
